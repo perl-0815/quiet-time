@@ -20,9 +20,14 @@ export function getDailyDuration(record: RecordData, dayDate: Date, now: number)
   if (!Number.isFinite(day.start) || !Number.isFinite(now) || day.start > now) return null;
   const limit = Math.min(day.end, now);
   const intervals: { start: number; end: number }[] = [];
-  let tracked = false;
+  // A newly created/reset record can be a known zero on its start date.
+  let tracked = record.startedAt >= day.start && record.startedAt < day.end && record.startedAt <= now;
+  const runs = [...record.completedRuns, ...record.currentRuns];
+  if (record.activeSession) {
+    runs.push({ startedAt: record.activeSession.startedAt, endedAt: record.activeSession.updatedAt });
+  }
 
-  for (const run of record.completedRuns) {
+  for (const run of runs) {
     const start = Math.max(day.start, run.startedAt);
     const end = Math.min(limit, run.endedAt);
     if (start < end) {
@@ -33,14 +38,6 @@ export function getDailyDuration(record: RecordData, dayDate: Date, now: number)
     }
   }
 
-  if (record.startedAt <= now && record.startedAt < day.end) {
-    const start = Math.max(day.start, record.startedAt);
-    if (start <= limit) {
-      // Include a just-started timer as a known zero, rather than unknown.
-      tracked = true;
-      if (start < limit) intervals.push({ start, end: limit });
-    }
-  }
   if (!tracked) return null;
 
   // Clock corrections can make recorded runs overlap. Count each instant once.

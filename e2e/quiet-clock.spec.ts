@@ -3,7 +3,12 @@ import { expect, test, type Page } from "@playwright/test";
 const NOW = Date.parse("2026-09-12T14:10:00.000Z");
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const RECORD_KEY = "quiet-time:record:v2";
+const RECORD_KEY = "quiet-time:record:v3";
+type Run = { startedAt: number; endedAt: number };
+
+function sumRuns(runs: Run[]) {
+  return runs.reduce((sum, run) => sum + run.endedAt - run.startedAt, 0);
+}
 
 async function freezeTime(page: Page, timestamp = NOW) {
   await page.clock.install({ time: timestamp });
@@ -14,18 +19,73 @@ async function readStorage(page: Page) {
   return page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "null"), RECORD_KEY);
 }
 
-async function seedRecord(page: Page, startedAt: number, longestRecord = 0, completedRuns: { startedAt: number; endedAt: number }[] = []) {
+async function seedRecord(page: Page, startedAt: number, longestRecord = 0, completedRuns: Run[] = [], currentRuns: Run[] = startedAt <= NOW ? [{ startedAt, endedAt: NOW }] : []) {
   await page.goto("/");
   await expect(page.getByRole("button", { name: "メニュー", exact: true })).toBeEnabled();
   await page.evaluate(
     ({ key, record }) => localStorage.setItem(key, JSON.stringify(record)),
-    { key: RECORD_KEY, record: { version: 2, startedAt, longestRecord, completedRuns } },
+    { key: RECORD_KEY, record: { version: 3, startedAt, longestRecord, completedRuns, currentRuns, activeSession: null } },
   );
   await page.reload();
 }
 
 async function expectDuration(page: Page, label: string) {
   await expect(page.getByRole("timer")).toHaveAttribute("aria-label", label);
+}
+
+// Portable lifecycle tests simulate focus explicitly. Playwright's headless
+// Chromium reports every page as focused, so bringToFront alone is not proof.
+async function installLifecycleSimulation(page: Page, initiallyFocused = true) {
+  await page.addInitScript(({ recordKey, initiallyFocused }) => {
+    Object.defineProperty(document, "hasFocus", {
+      configurable: true,
+      value: () => document.documentElement?.dataset.testFocused === undefined
+        ? initiallyFocused
+        : document.documentElement.dataset.testFocused !== "false",
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => document.documentElement?.dataset.testHidden === "true" ? "hidden" : "visible",
+    });
+    const audit = { callbacks: 0, writes: 0, live: 0 };
+    Object.defineProperty(window, "__quietTimeAudit", { value: audit });
+    const intervals = new Set<number>();
+    const originalSetInterval = window.setInterval.bind(window);
+    const originalClearInterval = window.clearInterval.bind(window);
+    window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      const tracked = timeout === 1000 && typeof handler === "function";
+      const callback = tracked ? () => { audit.callbacks++; handler(...args); } : handler;
+      const id = originalSetInterval(callback, timeout, ...args);
+      if (tracked) { intervals.add(id); audit.live = intervals.size; }
+      return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = ((id?: number) => {
+      if (id !== undefined) intervals.delete(id);
+      audit.live = intervals.size;
+      originalClearInterval(id);
+    }) as typeof window.clearInterval;
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key: string, value: string) {
+      if (key === recordKey) audit.writes++;
+      originalSetItem.call(this, key, value);
+    };
+  }, { recordKey: RECORD_KEY, initiallyFocused });
+}
+
+async function setSimulatedFocus(page: Page, focused: boolean) {
+  await page.evaluate((next) => {
+    document.documentElement.dataset.testFocused = String(next);
+    window.dispatchEvent(new Event(next ? "focus" : "blur"));
+  }, focused);
+}
+
+async function timerAudit(page: Page, clearCounts = false) {
+  return page.evaluate((clear) => {
+    const audit = (window as unknown as { __quietTimeAudit: { callbacks: number; writes: number; live: number } }).__quietTimeAudit;
+    const result = { ...audit };
+    if (clear) { audit.callbacks = 0; audit.writes = 0; }
+    return result;
+  }, clearCounts);
 }
 
 async function openReset(page: Page) {
@@ -47,32 +107,106 @@ async function confirmReset(page: Page) {
 test("first launch persists a start and refreshes the elapsed display each second", async ({ page }) => {
   await freezeTime(page);
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "広告ゲームを遊ばずに" })).toBeVisible();
+  await expect(page.getByText("広告ゲームを遊ばずに過ごした時間", { exact: true })).toBeVisible();
   await expectDuration(page, "0日 00時間 00分 00秒");
-  expect(await readStorage(page)).toEqual({ version: 2, startedAt: NOW, longestRecord: 0, completedRuns: [] });
+  expect(await readStorage(page)).toMatchObject({ version: 3, startedAt: NOW, longestRecord: 0, completedRuns: [], currentRuns: [], activeSession: { startedAt: NOW, updatedAt: NOW } });
   await expect(page.getByTestId("started-at")).toHaveText("2026/09/12 23:10");
 
   await page.clock.runFor(1000);
   await expectDuration(page, "0日 00時間 00分 01秒");
   expect((await readStorage(page)).startedAt).toBe(NOW);
+  expect((await readStorage(page)).activeSession.updatedAt).toBe(NOW + 1000);
 });
 
-test("closing and reopening counts all elapsed time without a running page", async ({ page, context }) => {
+test("closing and reopening preserves counted time and excludes the closed interval", async ({ page, context }) => {
   await freezeTime(page);
   await page.goto("/");
   await expectDuration(page, "0日 00時間 00分 00秒");
+  await page.clock.runFor(5000);
+  await expectDuration(page, "0日 00時間 00分 05秒");
   await page.close();
 
   const reopened = await context.newPage();
-  const duration = 3 * DAY + 12 * HOUR + 41 * 60 * 1000 + 8000;
-  await freezeTime(reopened, NOW + duration);
+  await freezeTime(reopened, NOW + 3 * DAY + 12 * HOUR);
   await reopened.goto("/");
-  await expectDuration(reopened, "3日 12時間 41分 08秒");
-  await expect(reopened.getByTestId("days")).toHaveText("3");
-  await expect(reopened.getByTestId("hours")).toHaveText("12");
-  await expect(reopened.getByTestId("minutes")).toHaveText("41");
-  await expect(reopened.getByTestId("seconds")).toHaveText("08");
+  await expectDuration(reopened, "0日 00時間 00分 05秒");
   expect((await readStorage(reopened)).startedAt).toBe(NOW);
+  await reopened.clock.runFor(1000);
+  await expectDuration(reopened, "0日 00時間 00分 06秒");
+});
+
+test("simulated blur stops heartbeats and excludes the gap from the timer, best and calendar", async ({ page }) => {
+  await freezeTime(page);
+  await installLifecycleSimulation(page);
+  await page.goto("/");
+  await expectDuration(page, "0日 00時間 00分 00秒");
+  expect((await timerAudit(page)).live).toBe(1);
+  await page.clock.runFor(3000);
+  await expectDuration(page, "0日 00時間 00分 03秒");
+
+  await setSimulatedFocus(page, false);
+  const paused = await readStorage(page);
+  expect(paused.activeSession).toBeNull();
+  expect(sumRuns(paused.currentRuns)).toBe(3000);
+  await timerAudit(page, true);
+  await page.clock.runFor(60_000);
+  await expectDuration(page, "0日 00時間 00分 03秒");
+  expect(await readStorage(page)).toEqual(paused);
+  expect(await timerAudit(page)).toEqual({ callbacks: 0, writes: 0, live: 0 });
+
+  await setSimulatedFocus(page, true);
+  await expectDuration(page, "0日 00時間 00分 03秒");
+  await page.clock.runFor(2000);
+  await expectDuration(page, "0日 00時間 00分 05秒");
+  await confirmReset(page);
+  await expectDuration(page, "0日 00時間 00分 00秒");
+  expect((await readStorage(page)).longestRecord).toBe(5000);
+  await openCalendar(page);
+  await expect(page.getByTestId("daily-duration")).toHaveText("00時間 00分 05秒");
+});
+
+test("simulated visibility and page lifecycle pause counting without duplicate intervals", async ({ page }) => {
+  await freezeTime(page);
+  await installLifecycleSimulation(page);
+  await page.goto("/");
+  await expectDuration(page, "0日 00時間 00分 00秒");
+  await page.evaluate(() => {
+    for (let index = 0; index < 6; index++) {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new PageTransitionEvent("pageshow"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+  });
+  await timerAudit(page, true);
+  await page.clock.runFor(2000);
+  await expectDuration(page, "0日 00時間 00分 02秒");
+  expect(await timerAudit(page)).toEqual({ callbacks: 2, writes: 2, live: 1 });
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.testHidden = "true";
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("focus"));
+  });
+  await timerAudit(page, true);
+  await page.clock.runFor(30_000);
+  await expectDuration(page, "0日 00時間 00分 02秒");
+  expect(await timerAudit(page)).toEqual({ callbacks: 0, writes: 0, live: 0 });
+
+  await page.evaluate(() => {
+    document.documentElement.dataset.testHidden = "false";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await page.clock.runFor(1000);
+  await expectDuration(page, "0日 00時間 00分 03秒");
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true })));
+  await timerAudit(page, true);
+  await page.clock.runFor(30_000);
+  await expectDuration(page, "0日 00時間 00分 03秒");
+  expect(await timerAudit(page)).toEqual({ callbacks: 0, writes: 0, live: 0 });
+  await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true })));
+  await page.clock.runFor(1000);
+  await expectDuration(page, "0日 00時間 00分 04秒");
+  expect((await timerAudit(page)).live).toBe(1);
 });
 
 test("cancel and Escape preserve the record and return keyboard focus", async ({ page }) => {
@@ -112,37 +246,105 @@ test("confirmed reset starts at zero and updates the best only for a longer reco
   await expectDuration(page, "0日 00時間 00分 00秒");
   await expect(page.getByTestId("longest-record")).toHaveText("7日 4時間");
   const firstCompleted = { startedAt: NOW - duration, endedAt: NOW };
-  expect(await readStorage(page)).toEqual({ version: 2, startedAt: NOW, longestRecord: duration, completedRuns: [firstCompleted] });
+  expect(await readStorage(page)).toMatchObject({ version: 3, startedAt: NOW, longestRecord: duration, currentRuns: [], activeSession: { startedAt: NOW, updatedAt: NOW }, completedRuns: expect.arrayContaining([firstCompleted]) });
+  expect(sumRuns((await readStorage(page)).completedRuns)).toBe(duration);
 
   await page.clock.runFor(1000);
   await confirmReset(page);
   await expectDuration(page, "0日 00時間 00分 00秒");
-  expect(await readStorage(page)).toEqual({
-    version: 2,
+  expect(await readStorage(page)).toMatchObject({
+    version: 3,
     startedAt: NOW + 1000,
     longestRecord: duration,
-    completedRuns: [firstCompleted, { startedAt: NOW, endedAt: NOW + 1000 }],
+    currentRuns: [],
+    activeSession: { startedAt: NOW + 1000, updatedAt: NOW + 1000 },
+    completedRuns: expect.arrayContaining([firstCompleted, { startedAt: NOW, endedAt: NOW + 1000 }]),
   });
+  expect(sumRuns((await readStorage(page)).completedRuns)).toBe(duration + 1000);
   await page.reload();
   await expectDuration(page, "0日 00時間 00分 00秒");
   await expect(page.getByTestId("longest-record")).toHaveText("7日 4時間");
 });
 
-test("a reset synchronizes another tab through localStorage", async ({ page, context }) => {
+test("another tab reads the reset when it regains focus", async ({ page, context }) => {
   await freezeTime(page);
+  await installLifecycleSimulation(page);
   await seedRecord(page, NOW - 3 * DAY, DAY);
   await expectDuration(page, "3日 00時間 00分 00秒");
+  await setSimulatedFocus(page, false);
   const other = await context.newPage();
   await freezeTime(other);
+  await installLifecycleSimulation(other);
   await other.goto("/");
   await expectDuration(other, "3日 00時間 00分 00秒");
+  await setSimulatedFocus(other, false);
+  await setSimulatedFocus(page, true);
   await confirmReset(page);
   await expectDuration(page, "0日 00時間 00分 00秒");
+  await expectDuration(other, "3日 00時間 00分 00秒");
+  await setSimulatedFocus(page, false);
+  await setSimulatedFocus(other, true);
   await expectDuration(other, "0日 00時間 00分 00秒");
   await expect(other.getByTestId("longest-record")).toHaveText("3日 0時間");
 });
 
-test("corrupt saved values recover and a future start never shows negative time", async ({ page }) => {
+test("clearing localStorage from another tab starts a new record and keeps the focused heartbeat running", async ({ page, context }) => {
+  await freezeTime(page);
+  await installLifecycleSimulation(page);
+  await page.goto("/");
+  await expectDuration(page, "0日 00時間 00分 00秒");
+  await page.clock.runFor(5000);
+  await expectDuration(page, "0日 00時間 00分 05秒");
+
+  const other = await context.newPage();
+  await freezeTime(other, NOW + 5000);
+  await installLifecycleSimulation(other, false);
+  await other.goto("/");
+  await expectDuration(other, "0日 00時間 00分 05秒");
+  expect((await timerAudit(other)).live).toBe(0);
+  await other.evaluate(() => localStorage.clear());
+
+  await expectDuration(page, "0日 00時間 00分 00秒");
+  expect(await readStorage(page)).toMatchObject({
+    version: 3,
+    startedAt: NOW + 5000,
+    currentRuns: [],
+    activeSession: { startedAt: NOW + 5000, updatedAt: NOW + 5000 },
+  });
+  expect((await timerAudit(page)).live).toBe(1);
+  await timerAudit(page, true);
+  await page.clock.runFor(2000);
+  await expectDuration(page, "0日 00時間 00分 02秒");
+  expect(await timerAudit(page)).toEqual({ callbacks: 2, writes: 2, live: 1 });
+  expect((await readStorage(page)).activeSession.updatedAt).toBe(NOW + 7000);
+});
+
+test("an unfocused first visit preserves an unsaved migration without counting the wait for focus", async ({ page }) => {
+  await freezeTime(page);
+  await installLifecycleSimulation(page, false);
+  await page.addInitScript((startedAt) => {
+    localStorage.setItem("startedAt", String(startedAt));
+    localStorage.setItem("longestRecord", "0");
+    Storage.prototype.setItem = () => { throw new DOMException("Storage full", "QuotaExceededError"); };
+  }, NOW - 3 * DAY);
+  await page.goto("/");
+  await expectDuration(page, "3日 00時間 00分 00秒");
+  await expect(page.getByRole("status").filter({ hasText: "このブラウザでは記録を保存できません" })).toBeVisible();
+  expect((await timerAudit(page)).live).toBe(0);
+  expect(await readStorage(page)).toBeNull();
+  await page.clock.runFor(HOUR);
+  await expectDuration(page, "3日 00時間 00分 00秒");
+
+  await setSimulatedFocus(page, true);
+  await expectDuration(page, "3日 00時間 00分 00秒");
+  await page.clock.runFor(1000);
+  await expectDuration(page, "3日 00時間 00分 01秒");
+  expect((await timerAudit(page)).live).toBe(1);
+  expect(await readStorage(page)).toBeNull();
+  await expect(page.getByRole("status").filter({ hasText: "このブラウザでは記録を保存できません" })).toBeVisible();
+});
+
+test("corrupt saved values recover and a future start does not prevent focused counting", async ({ page }) => {
   await freezeTime(page);
   await page.addInitScript((key) => {
     if (localStorage.getItem(key) === null) {
@@ -153,7 +355,7 @@ test("corrupt saved values recover and a future start never shows negative time"
   }, RECORD_KEY);
   await page.goto("/");
   await expectDuration(page, "0日 00時間 00分 00秒");
-  expect(await readStorage(page)).toEqual({ version: 2, startedAt: NOW, longestRecord: 0, completedRuns: [] });
+  expect(await readStorage(page)).toMatchObject({ version: 3, startedAt: NOW, longestRecord: 0, completedRuns: [], currentRuns: [], activeSession: { startedAt: NOW, updatedAt: NOW } });
 
   await page.evaluate(({ key, future }) => {
     const record = JSON.parse(localStorage.getItem(key)!);
@@ -162,7 +364,7 @@ test("corrupt saved values recover and a future start never shows negative time"
   await page.reload();
   await expectDuration(page, "0日 00時間 00分 00秒");
   await page.clock.runFor(1000);
-  await expectDuration(page, "0日 00時間 00分 00秒");
+  await expectDuration(page, "0日 00時間 00分 01秒");
   expect((await readStorage(page)).startedAt).toBe(NOW + DAY);
 });
 
@@ -279,21 +481,25 @@ test("the installed app shell reopens, ticks, and saves a reset while offline", 
   const reopened = await context.newPage();
   await freezeTime(reopened, NOW + 2 * HOUR);
   await reopened.goto("/");
-  await expectDuration(reopened, "0日 02時間 00分 00秒");
+  await expectDuration(reopened, "0日 00時間 00分 01秒");
   await confirmReset(reopened);
   await expectDuration(reopened, "0日 00時間 00分 00秒");
-  expect(await readStorage(reopened)).toEqual({
-    version: 2,
+  expect(await readStorage(reopened)).toMatchObject({
+    version: 3,
     startedAt: NOW + 2 * HOUR,
-    longestRecord: 2 * HOUR,
-    completedRuns: [{ startedAt: NOW, endedAt: NOW + 2 * HOUR }],
+    longestRecord: 1000,
+    currentRuns: [],
+    activeSession: { startedAt: NOW + 2 * HOUR, updatedAt: NOW + 2 * HOUR },
   });
+  expect(sumRuns((await readStorage(reopened)).completedRuns)).toBe(1000);
   await reopened.reload();
   await expectDuration(reopened, "0日 00時間 00分 00秒");
-  await expect(reopened.getByTestId("longest-record")).toHaveText("0日 2時間");
+  await expect(reopened.getByTestId("longest-record")).toHaveText("0日 0時間");
   await expect(reopened.locator("html")).toHaveAttribute("data-theme", "dark");
   await openCalendar(reopened);
-  await expect(reopened.getByTestId("daily-duration")).toHaveText("01時間 10分 00秒");
+  await expect(reopened.getByTestId("daily-duration")).toHaveText("00時間 00分 00秒");
+  await reopened.locator('[data-date="2026-09-12"]').click();
+  await expect(reopened.getByTestId("daily-duration")).toHaveText("00時間 00分 01秒");
 });
 
 test("small portrait screens keep the timer, menu and footer within one screen", async ({ page }) => {
@@ -315,7 +521,7 @@ test("small portrait screens keep the timer, menu and footer within one screen",
     expect(footer!.y + footer!.height).toBeLessThanOrEqual(viewport.height);
     const menu = await page.getByRole("button", { name: "メニュー", exact: true }).boundingBox();
     expect(menu!.height).toBeGreaterThanOrEqual(44);
-    await expect(page.getByRole("heading", { name: "広告ゲームを遊ばずに" })).toBeInViewport();
+    await expect(page.getByText("広告ゲームを遊ばずに過ごした時間", { exact: true })).toBeInViewport();
     await expect(page.getByTestId("started-at")).toBeInViewport();
     await openCalendar(page);
     const calendar = await page.getByRole("dialog", { name: "カレンダー", exact: true }).boundingBox();
@@ -334,7 +540,7 @@ test("legacy data migrates without losing its start, best or making up history",
   });
   await page.goto("/");
   await expectDuration(page, "3日 00時間 00分 00秒");
-  expect(await readStorage(page)).toEqual({ version: 2, startedAt: NOW - 3 * DAY, longestRecord: 7 * DAY, completedRuns: [] });
+  expect(await readStorage(page)).toMatchObject({ version: 3, startedAt: NOW - 3 * DAY, longestRecord: 7 * DAY, completedRuns: [], currentRuns: [{ startedAt: NOW - 3 * DAY, endedAt: NOW }] });
   await openCalendar(page);
   await page.locator('[data-date="2026-09-08"]').click();
   await expect(page.getByTestId("daily-duration")).toHaveText("記録なし");
@@ -344,7 +550,8 @@ test("legacy data migrates without losing its start, best or making up history",
   await confirmReset(page);
   await page.reload();
   await expectDuration(page, "0日 00時間 00分 00秒");
-  expect((await readStorage(page)).completedRuns).toEqual([{ startedAt: NOW - 3 * DAY, endedAt: NOW }]);
+  expect((await readStorage(page)).completedRuns).toEqual(expect.arrayContaining([{ startedAt: NOW - 3 * DAY, endedAt: NOW }]));
+  expect(sumRuns((await readStorage(page)).completedRuns)).toBe(3 * DAY);
 });
 
 test("the three-item menu supports keyboard navigation and persists dark mode", async ({ page }) => {
@@ -379,9 +586,14 @@ test("calendar totals survive resets and reopening with bounded month navigation
   await freezeTime(page);
   const firstStart = Date.parse("2026-08-30T18:00:00+09:00");
   const priorReset = Date.parse("2026-08-31T10:00:00+09:00");
-  await seedRecord(page, priorReset, 16 * HOUR, [{ startedAt: firstStart, endedAt: priorReset }]);
+  const currentRuns = [
+    { startedAt: Date.parse("2026-08-31T12:00:00+09:00"), endedAt: Date.parse("2026-08-31T14:00:00+09:00") },
+    { startedAt: Date.parse("2026-09-11T09:00:00+09:00"), endedAt: Date.parse("2026-09-11T09:30:00+09:00") },
+    { startedAt: Date.parse("2026-09-12T10:00:00+09:00"), endedAt: Date.parse("2026-09-12T11:00:00+09:00") },
+  ];
+  await seedRecord(page, priorReset, 16 * HOUR, [{ startedAt: firstStart, endedAt: priorReset }], currentRuns);
   await openCalendar(page);
-  await expect(page.getByTestId("daily-duration")).toHaveText("23時間 10分 00秒");
+  await expect(page.getByTestId("daily-duration")).toHaveText("01時間 00分 00秒");
   await expect(page.locator('[data-date="2026-09-13"]')).toBeDisabled();
   await expect(page.getByRole("button", { name: "次の月" })).toBeDisabled();
   await page.getByRole("button", { name: "前の月" }).click();
@@ -392,10 +604,10 @@ test("calendar totals survive resets and reopening with bounded month navigation
   await page.locator('[data-date="2026-08-30"]').click();
   await expect(page.getByTestId("daily-duration")).toHaveText("06時間 00分 00秒");
   await page.locator('[data-date="2026-08-31"]').click();
-  await expect(page.getByTestId("daily-duration")).toHaveText("24時間 00分 00秒");
+  await expect(page.getByTestId("daily-duration")).toHaveText("12時間 00分 00秒");
   await page.getByRole("button", { name: "次の月" }).click();
   await page.locator('[data-date="2026-09-11"]').click();
-  await expect(page.getByTestId("daily-duration")).toHaveText("24時間 00分 00秒");
+  await expect(page.getByTestId("daily-duration")).toHaveText("00時間 30分 00秒");
   await page.getByRole("button", { name: "今日", exact: true }).click();
   await expect(page.locator('[data-date="2026-09-12"]')).toHaveAttribute("aria-pressed", "true");
   await page.keyboard.press("Escape");
@@ -404,14 +616,15 @@ test("calendar totals survive resets and reopening with bounded month navigation
   await confirmReset(page);
   await expectDuration(page, "0日 00時間 00分 00秒");
   await openCalendar(page);
-  await expect(page.getByTestId("daily-duration")).toHaveText("23時間 10分 00秒");
+  await expect(page.getByTestId("daily-duration")).toHaveText("01時間 00分 00秒");
   await page.clock.runFor(1000);
-  await expect(page.getByTestId("daily-duration")).toHaveText("23時間 10分 01秒");
+  await expect(page.getByTestId("daily-duration")).toHaveText("01時間 00分 01秒");
   await page.reload();
   await openCalendar(page);
-  await expect(page.getByTestId("daily-duration")).toHaveText("23時間 10分 01秒");
-  expect((await readStorage(page)).completedRuns).toEqual([
+  await expect(page.getByTestId("daily-duration")).toHaveText("01時間 00分 01秒");
+  expect((await readStorage(page)).completedRuns).toEqual(expect.arrayContaining([
     { startedAt: firstStart, endedAt: priorReset },
-    { startedAt: priorReset, endedAt: NOW },
-  ]);
+    ...currentRuns,
+  ]));
+  expect(sumRuns((await readStorage(page)).completedRuns)).toBe(19.5 * HOUR);
 });

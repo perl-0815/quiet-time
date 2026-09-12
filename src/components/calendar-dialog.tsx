@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { MaterialIcon } from "@/components/material-icon";
 import { getDailyDuration, localDateKey } from "@/lib/calendar";
-import { pad, type RecordData } from "@/lib/record";
+import { countedIntervals, pad, type RecordData } from "@/lib/record";
 
 function localDate(timestamp: number) {
   const date = new Date(timestamp);
@@ -24,7 +24,7 @@ export function CalendarDialog({ record, now, onClose }: { record: RecordData; n
   useEffect(() => { dialogRef.current?.showModal(); }, []);
 
   const today = localDate(now);
-  const earliest = new Date(Math.min(record.startedAt, ...record.completedRuns.map((run) => run.startedAt)));
+  const earliest = new Date(countedIntervals(record).reduce((start, run) => Math.min(start, run.startedAt), record.startedAt));
   const earliestMonth = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
   const thisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const dayCount = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
