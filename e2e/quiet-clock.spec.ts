@@ -107,7 +107,7 @@ async function confirmReset(page: Page) {
 test("first launch persists a start and refreshes the elapsed display each second", async ({ page }) => {
   await freezeTime(page);
   await page.goto("/");
-  await expect(page.getByText("広告ゲームを遊ばずに過ごした時間", { exact: true })).toBeVisible();
+  await expect(page.getByText("デトックス時間", { exact: true })).toBeVisible();
   await expectDuration(page, "0日 00時間 00分 00秒");
   expect(await readStorage(page)).toMatchObject({ version: 3, startedAt: NOW, longestRecord: 0, completedRuns: [], currentRuns: [], activeSession: { startedAt: NOW, updatedAt: NOW } });
   await expect(page.getByTestId("started-at")).toHaveText("2026/09/12 23:10");
@@ -454,7 +454,7 @@ test("the installed app shell reopens, ticks, and saves a reset while offline", 
     expect(response.headers()["content-type"]).toContain("image/png");
     expect((await response.body()).subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   }
-  await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", "余白 — 広告ゲームを遊ばずに");
+  await expect(page.locator('meta[property="og:title"]')).toHaveAttribute("content", "QuietTime");
   await expect(page.locator('meta[name="twitter:card"]')).toHaveAttribute("content", "summary_large_image");
   const ogImage = await page.locator('meta[property="og:image"]').getAttribute("content");
   expect(ogImage).toBeTruthy();
@@ -521,7 +521,7 @@ test("small portrait screens keep the timer, menu and footer within one screen",
     expect(footer!.y + footer!.height).toBeLessThanOrEqual(viewport.height);
     const menu = await page.getByRole("button", { name: "メニュー", exact: true }).boundingBox();
     expect(menu!.height).toBeGreaterThanOrEqual(44);
-    await expect(page.getByText("広告ゲームを遊ばずに過ごした時間", { exact: true })).toBeInViewport();
+    await expect(page.getByText("デトックス時間", { exact: true })).toBeInViewport();
     await expect(page.getByTestId("started-at")).toBeInViewport();
     await openCalendar(page);
     const calendar = await page.getByRole("dialog", { name: "カレンダー", exact: true }).boundingBox();

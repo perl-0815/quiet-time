@@ -5,22 +5,22 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000")),
-  title: "余白 — 広告ゲームを遊ばずに",
-  description: "広告ゲームを遊ばずに過ごした時間を、静かに記録する時計。",
-  applicationName: "余白",
+  title: "QuietTime",
+  description: "過ごした時間を記録する時計。",
+  applicationName: "QuietTime",
   openGraph: {
     type: "website",
     locale: "ja_JP",
-    title: "余白 — 広告ゲームを遊ばずに",
-    description: "広告ゲームを遊ばずに過ごした時間を、静かに記録する時計。",
-    siteName: "余白",
+    title: "QuietTime",
+    description: "過ごした時間を記録する時計。",
+    siteName: "QuietTime",
   },
   twitter: {
     card: "summary_large_image",
-    title: "余白 — 広告ゲームを遊ばずに",
-    description: "広告ゲームを遊ばずに過ごした時間を、静かに記録する時計。",
+    title: "QuietTime",
+    description: "過ごした時間を記録する時計。",
   },
-  appleWebApp: { capable: true, statusBarStyle: "default", title: "余白" },
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "QuietTime" },
   formatDetection: { telephone: false },
   icons: {
     icon: [{ url: "/icons/favicon.svg", type: "image/svg+xml" }],

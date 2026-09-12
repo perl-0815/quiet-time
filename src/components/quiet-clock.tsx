@@ -52,7 +52,7 @@ export function QuietClock() {
               <span className="time-part"><span className="time-number" data-testid="seconds">{record ? pad(elapsed.seconds) : "--"}</span><span className="time-unit">秒</span></span>
             </div>
           </div>
-          <p id="clock-title" className="clock-caption">広告ゲームを遊ばずに過ごした時間</p>
+          <p id="clock-title" className="clock-caption">デトックス時間</p>
         </section>
       </main>
 
