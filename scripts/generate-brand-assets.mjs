@@ -30,13 +30,13 @@ try {
       body { background: #f8f7f4; color: #353d32; -webkit-font-smoothing: antialiased; }
       main { width: 1200px; height: 630px; position: relative; overflow: hidden; }
       .frame { position: absolute; inset: 28px; border: 1px solid #dfe2d7; }
-      .text { position: absolute; left: 100px; top: 128px; }
-      h1 { font-family: "Hiragino Mincho ProN", "Yu Mincho", serif; font-size: 118px; line-height: 1.3; font-weight: 400; letter-spacing: .16em; margin: 0 0 37px; }
-      p { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; font-size: 30px; line-height: 1.9; letter-spacing: .055em; font-weight: 300; margin: 0; color: #697160; }
+      .text { position: absolute; left: 100px; top: 215px; }
+      h1 { font-family: Georgia, "Times New Roman", serif; font-size: 104px; line-height: 1.15; font-weight: 400; letter-spacing: -.045em; margin: 0 0 24px; }
+      p { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; font-size: 28px; line-height: 1.9; letter-spacing: .055em; font-weight: 300; margin: 0; color: #697160; }
       .dial { position: absolute; left: 756px; top: 140px; width: 350px; height: 350px; }
     </style></head><body><main>
       <div class="frame"></div>
-      <div class="text"><h1>余白</h1><p>広告ゲームを遊ばずに、<br>過ごす時間。</p></div>
+      <div class="text"><h1>QuietTime</h1><p>デトックス時間</p></div>
       <svg class="dial" viewBox="0 0 350 350" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <circle cx="175" cy="175" r="166" fill="#f0f2eb"/>
         <circle cx="175" cy="175" r="141" fill="none" stroke="#74826a" stroke-width="3"/>
@@ -51,7 +51,7 @@ try {
   await page.screenshot({ path: path.join(root, "src/app/opengraph-image.png") });
   await writeFile(
     path.join(root, "src/app/opengraph-image.alt.txt"),
-    "余白 — 広告ゲームを遊ばずに、過ごす時間。淡い背景に時計のシンボル。\n",
+    "QuietTime — デトックス時間。淡い背景に時計のシンボル。\n",
   );
 
   // ICO embeds three real raster sizes so small browser tabs use an appropriate
