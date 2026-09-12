@@ -5,9 +5,9 @@ export const dynamic = "force-static";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "余白 — 広告ゲームを遊ばずに",
-    short_name: "余白",
-    description: "広告ゲームを遊ばずに過ごした時間を、静かに記録する時計。",
+    name: "QuietTime",
+    short_name: "QuietTime",
+    description: "過ごした時間を記録する時計。",
     lang: "ja",
     start_url: "/",
     scope: "/",
